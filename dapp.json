@@ -1,3 +1,22 @@
 {
-  "secrets": []
+  "name": "WorkQuest",
+  "icon": { "emoji": "📓" },
+  "secrets": [
+    {
+      "key": "PURCHASES_ENABLED",
+      "description": "Set to 'true' only once a real payment provider is wired up. While it is 'false' (the default) the Resolve store answers 'unavailable' and checkout returns 503 — Resolve is earned by journalling only.",
+      "required": false,
+      "private": false,
+      "default": "false"
+    }
+  ],
+  "tests": [
+    { "name": "Journal — today", "path": "/?demo=1#/journal", "expectText": "Journal" },
+    { "name": "Journal — week", "path": "/?demo=1#/journal/week", "expectText": "This week" },
+    { "name": "Workshop", "path": "/?demo=1#/workshop", "expectText": "Focus" },
+    { "name": "Season pass", "path": "/?demo=1#/season", "expectText": "Unlock Premium Track" },
+    { "name": "Resolve store is shut", "path": "/?demo=1#/season", "expectText": "aren't available yet" },
+    { "name": "Profile", "path": "/?demo=1#/profile", "expectText": "Locker" },
+    { "name": "Migration tray", "path": "/?demo=1#/journal", "expectText": "left behind" }
+  ]
 }
