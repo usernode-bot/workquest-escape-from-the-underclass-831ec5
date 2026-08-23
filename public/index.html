@@ -2,7 +2,7 @@
 <html lang="en" class="dark">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   
   <script>
   // usernode-dev-console@1
@@ -78,56 +78,64 @@
        classes, swap this link for the platform-hosted engine instead:
        <script src="https://social-vibecoding.usernodelabs.org/usernode-tailwind/v1/tailwind.js"></script> -->
   <link rel="stylesheet" href="/tailwind.css">
+  <!-- The native-feel UI kit and the platform bridge are CENTRALLY HOSTED.
+       Never vendor either one: a copy freezes on the day it is made, and the
+       fleet-wide fix and one-redeploy rollback central hosting buys stop
+       reaching this app. The bridge tag is also how the app ANSWERS the
+       shell, so it is not conditional on calling a bridge API. -->
+  <link rel="stylesheet" href="https://social-vibecoding.usernodelabs.org/usernode-native/v1/native.css">
+  <script src="https://social-vibecoding.usernodelabs.org/usernode-bridge/v1/bridge.js"></script>
+  <script src="https://social-vibecoding.usernodelabs.org/usernode-native/v1/native.js"></script>
 </head>
-<body class="bg-zinc-950 text-zinc-100 min-h-screen flex flex-col items-center justify-center gap-8 p-4">
-  <h1 class="text-2xl font-bold">WorkQuest: Escape from the Underclass</h1>
+<body class="bg-zinc-950 text-zinc-100 antialiased">
 
-  <button id="press-btn" class="w-32 h-32 rounded-full bg-violet-600 hover:bg-violet-500 active:scale-95 transition-all text-white text-xl font-bold shadow-lg shadow-violet-600/30">
-    Press!
-  </button>
+<!-- Fixed shell: the page itself never scrolls, only #scroll does. That is
+     what stops the on-screen keyboard from reflowing the whole frame.
+     Capped at a phone-ish column and centred, so the same layout that reads
+     well at 390px doesn't stretch a task row across 1280px of desktop. -->
+<div class="fixed inset-0 mx-auto max-w-2xl flex flex-col overflow-hidden border-x border-zinc-800/60">
 
-  <div id="count" class="text-lg text-zinc-400">0 total presses</div>
+  <header id="topbar" class="shrink-0 bg-zinc-950/90 backdrop-blur border-b border-zinc-800/80"
+          style="padding-top: var(--un-safe-inset-top, env(safe-area-inset-top, 0px))">
+    <div class="px-4 pt-3 pb-2 flex items-center gap-3">
+      <div class="min-w-0 flex-1">
+        <div id="screen-title" class="text-base font-semibold leading-tight truncate">Journal</div>
+        <div id="screen-sub" class="text-xs text-zinc-500 truncate">Loading…</div>
+      </div>
+      <div id="streak-chip" class="hidden shrink-0 text-xs px-2 py-1 rounded-full border border-amber-500/40 bg-amber-500/10 text-amber-300"></div>
+    </div>
+    <div id="currency-strip" class="px-4 pb-2 flex items-center gap-2 text-xs overflow-x-auto"></div>
+  </header>
 
-  <div class="w-full max-w-sm">
-    <h2 class="text-sm font-medium text-zinc-500 mb-2 text-center">Leaderboard</h2>
-    <div id="leaderboard" class="space-y-1"></div>
-  </div>
+  <main id="scroll" class="flex-1 overflow-y-auto overscroll-y-contain">
+    <section data-screen="journal" class="pb-8"></section>
+    <section data-screen="workshop" class="pb-8 hidden"></section>
+    <section data-screen="season" class="pb-8 hidden"></section>
+    <section data-screen="profile" class="pb-8 hidden"></section>
+  </main>
 
-  <script>
-    const params = new URLSearchParams(window.location.search);
-    const token = params.get('token') || '';
-    const headers = token ? { 'x-usernode-token': token } : {};
+  <nav id="tabbar" class="shrink-0 grid grid-cols-4 bg-zinc-950/95 backdrop-blur border-t border-zinc-800"
+       style="padding-bottom: var(--un-safe-inset-bottom, env(safe-area-inset-bottom, 0px))">
+    <button data-tab="journal"  class="un-pressable py-2.5 flex flex-col items-center gap-0.5 text-[11px] text-zinc-500">
+      <span class="text-lg leading-none">📓</span><span>Journal</span>
+    </button>
+    <button data-tab="workshop" class="un-pressable py-2.5 flex flex-col items-center gap-0.5 text-[11px] text-zinc-500">
+      <span class="text-lg leading-none">🛠️</span><span>Workshop</span>
+    </button>
+    <button data-tab="season"   class="un-pressable py-2.5 flex flex-col items-center gap-0.5 text-[11px] text-zinc-500">
+      <span class="text-lg leading-none">🎟️</span><span>Season</span>
+    </button>
+    <button data-tab="profile"  class="un-pressable py-2.5 flex flex-col items-center gap-0.5 text-[11px] text-zinc-500">
+      <span class="text-lg leading-none">🧑‍🚀</span><span>Profile</span>
+    </button>
+  </nav>
+</div>
 
-    async function loadLeaderboard() {
-      const res = await fetch('/api/leaderboard', { headers });
-      if (!res.ok) return;
-      const { leaderboard } = await res.json();
-      const el = document.getElementById('leaderboard');
-      if (!leaderboard.length) {
-        el.innerHTML = '<p class="text-center text-zinc-600 text-sm">No presses yet</p>';
-        return;
-      }
-      el.innerHTML = leaderboard.map((r, i) =>
-        '<div class="flex justify-between px-3 py-1 rounded ' + (i === 0 ? 'bg-violet-600/20 text-violet-300' : 'text-zinc-400') + '">' +
-        '<span>' + (i + 1) + '. ' + r.username + '</span>' +
-        '<span class="font-mono">' + r.presses + '</span></div>'
-      ).join('');
-      const total = leaderboard.reduce((s, r) => s + parseInt(r.presses), 0);
-      document.getElementById('count').textContent = total + ' total presses';
-    }
-
-    document.getElementById('press-btn').addEventListener('click', async () => {
-      try {
-        const res = await fetch('/api/press', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json', ...headers },
-        });
-        if (res.ok) loadLeaderboard();
-        else if (res.status === 401) document.getElementById('count').textContent = 'Sign in to press!';
-      } catch {}
-    });
-
-    loadLeaderboard();
-  </script>
+<script src="/app.js"></script>
+<script src="/journal.js"></script>
+<script src="/workshop.js"></script>
+<script src="/season.js"></script>
+<script src="/profile.js"></script>
+<script>WQ.boot();</script>
 </body>
 </html>

@@ -1,11 +1,18 @@
 const express = require('express');
 const path = require('path');
-const { Pool } = require('pg');
 const jwt = require('jsonwebtoken');
+
+const { pool, IS_STAGING, isDemo } = require('./routes/common');
+const { migrate } = require('./db/migrate');
+const { seed } = require('./db/seed');
 
 const app = express();
 const port = process.env.PORT || 3000;
-const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+
+// Stop accepting work the moment the platform says the container is going
+// away. Set before anything reads it, because /health checks it below.
+let shuttingDown = false;
+const DRAIN_MS = 3000;
 
 // The platform signs user-identity tokens with an RSA private key it never
 // shares. Containers get only the PUBLIC half, so this app can verify who a
@@ -23,7 +30,27 @@ const APP_AUDIENCE = process.env.USERNODE_APP_ID
 // Paths that stay open without authentication. Add a path here (and add it
 // with `app.get`/`app.post` below) if you deliberately want it public.
 // Everything else requires a valid platform-issued JWT.
-const PUBLIC_API_PATHS = new Set(['/health']);
+//
+// The read endpoints below are listed NOT because their data is public — it
+// isn't — but because ?demo=1 has to be able to reach them. Each one calls
+// demoOr401(), which serves a fabricated fixture in staging demo mode and
+// returns 401 to everybody else, so real rows still require a real token.
+// Listing them here is what lets an unauthenticated screenshot/check run
+// render a populated screen instead of a console full of 401s.
+const PUBLIC_API_PATHS = new Set([
+  '/health',
+  '/api/bootstrap',
+  '/api/journal/day',
+  '/api/journal/week',
+  '/api/journal/month',
+  '/api/journal/year',
+  '/api/journal/unmigrated',
+  '/api/game/state',
+  '/api/season',
+  '/api/profile',
+  // Always safe: it names prices nobody can pay. See routes/purchase.js.
+  '/api/purchase/catalog',
+]);
 
 app.use(express.json());
 
@@ -59,7 +86,12 @@ app.use((req, res, next) => {
   next();
 });
 
-app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+app.get('/health', (_req, res) => {
+  // 503 while draining, so whatever polls readiness sees the container
+  // leaving rotation rather than a connection reset mid-request.
+  if (shuttingDown) return res.status(503).json({ status: 'shutting_down' });
+  res.json({ status: 'ok' });
+});
 
 // The template ships no favicon file; index.html carries an inline SVG
 // icon instead. Answer 204 here so anything that still probes
@@ -68,33 +100,14 @@ app.get('/health', (_req, res) => res.json({ status: 'ok' }));
 // fresh load.
 app.get('/favicon.ico', (_req, res) => res.status(204).end());
 
-// Button press
-app.post('/api/press', async (req, res) => {
-  try {
-    await pool.query(`
-      INSERT INTO presses (user_id, username) VALUES ($1, $2)
-    `, [req.user.id, req.user.username]);
-    res.json({ ok: true });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
-
-// Leaderboard
-app.get('/api/leaderboard', async (_req, res) => {
-  try {
-    const { rows } = await pool.query(`
-      SELECT username, COUNT(*) as presses
-      FROM presses
-      GROUP BY username
-      ORDER BY presses DESC
-      LIMIT 50
-    `);
-    res.json({ leaderboard: rows });
-  } catch (err) {
-    res.status(500).json({ error: err.message });
-  }
-});
+// The app's API. Every router mounts under /api, and every mutating endpoint
+// answers { player, deltas } so the client can render a payout without a
+// second round trip.
+app.use('/api', require('./routes/bootstrap').router);
+app.use('/api', require('./routes/journal').router);
+app.use('/api', require('./routes/game').router);
+app.use('/api', require('./routes/season').router);
+app.use('/api', require('./routes/purchase').router);
 
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -107,6 +120,15 @@ app.use(express.static(path.join(__dirname, 'public')));
 // of a redirect, so the platform shell is never loaded INSIDE its own
 // app iframe and stray visits still don't reveal the app.
 app.get('*', (req, res) => {
+  // The one unauthenticated way in, and it is the same mechanism the read
+  // endpoints use: in staging only, ?demo=1 serves the shell so an
+  // unauthenticated screenshot or proposal check can actually see a screen.
+  // It reveals nothing — every API call the shell then makes goes through
+  // demoOr401(), which answers with the fabricated fixture bundle. In
+  // production isDemo() is false forever and this line does nothing.
+  if (!req.user && isDemo(req)) {
+    return res.sendFile(path.join(__dirname, 'public', 'index.html'));
+  }
   if (!req.user) {
     // Deep-link pass-through (platform #743): carry the visited
     // path+query into the chromeless view so share links land on the
@@ -132,16 +154,39 @@ app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
+// The template's `presses` table is deliberately NOT dropped. It still holds
+// production rows from the old app and nothing here reads it; a DROP would
+// destroy data to tidy a schema.
+
+let server = null;
+
+async function shutdown(signal) {
+  if (shuttingDown) return;   // a second signal during the drain is a no-op
+  shuttingDown = true;
+  console.log(`[shutdown] ${signal} received, draining`);
+  if (server) {
+    server.close(() => {});             // stop accepting new connections
+    server.closeIdleConnections?.();    // drop idle keep-alives immediately
+    const t = setTimeout(() => server.closeAllConnections?.(), DRAIN_MS);
+    t.unref?.();                        // never hold the process open on this
+  }
+  try {
+    await pool.end();
+  } catch (err) {
+    console.error('[shutdown] pool.end failed', err.message);
+  }
+  process.exit(0);
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
+
 async function start() {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS presses (
-      id SERIAL PRIMARY KEY,
-      user_id INTEGER NOT NULL,
-      username VARCHAR(255) NOT NULL,
-      created_at TIMESTAMPTZ DEFAULT NOW()
-    )
-  `);
-  app.listen(port, () => console.log(`Listening on :${port}`));
+  await migrate(pool);
+  // Staging starts from a copy of production, so every table this app creates
+  // arrives empty. Seed fabricated demo rows there and only there.
+  if (IS_STAGING) await seed(pool);
+  server = app.listen(port, () => console.log(`Listening on :${port}`));
 }
 
 start().catch(err => { console.error(err); process.exit(1); });
