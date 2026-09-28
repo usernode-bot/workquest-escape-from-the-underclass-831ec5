@@ -1,6 +1,6 @@
 {
   "name": "WorkQuest",
-  "icon": { "emoji": "📓" },
+  "icon": { "image": "brand/icon.png", "emoji": "📓" },
   "secrets": [
     {
       "key": "PURCHASES_ENABLED",
