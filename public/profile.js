@@ -30,7 +30,6 @@
            style="${WQ.esc(frame ? frame.css : '')}">${WQ.esc(initial)}</div>
       <div class="min-w-0 flex-1">
         <div class="text-base font-semibold text-zinc-100 truncate">${WQ.esc(p.username || 'You')}</div>
-        <div class="text-xs text-zinc-500">Journal Level ${p.journal_level}</div>
         <div class="mt-1.5 h-1.5 rounded-full bg-zinc-800 overflow-hidden">
           <div class="h-full bg-violet-500" style="width:${pct}%"></div>
         </div>
